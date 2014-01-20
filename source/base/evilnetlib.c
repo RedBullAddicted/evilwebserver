@@ -12,6 +12,9 @@
  
 #include "evilnetlib.h"
 
+//Cgi function
+#include "cgi.c"
+
 /** 
  *  @file   evilnetlib.c
  *  @brief  Networking library with a focus on HTTP
@@ -27,7 +30,9 @@ http_client_t * initClientContainer()
 {
     http_client_t *client_container;
     client_container = malloc(sizeof(http_client_t));
+    
     client_container->addr = malloc(sizeof(struct sockaddr_in));
+    memset(client_container->addr, '\0', sizeof(struct sockaddr_in));
     client_container->sockfd = 0;
     return client_container;
 }
@@ -190,8 +195,9 @@ int sendString(int sockfd, char *buffer)
  */
 int sendHeader(int sockfd, char *message, char *value)
 {
-    int header_length = strlen(message) + strlen(value);
-    char * header = malloc(header_length);
+    unsigned int header_length = strlen(message) + strlen(value);
+
+    char * header = malloc(header_length + 4);
     //Render header
     sprintf(header,"%s: %s\r\n", message, value);
     //Send and free the header ptr
@@ -296,116 +302,6 @@ int sendPython(int sockfd, http_request_t* http_request)
 }
 
 
-int sendCGI(int sockfd, http_request_t* http_request, char * command, char * script) 
-{
-    //Set environment variables
-    char ** envp = NULL;
-
-    int envp_length = 0;
- 
-    envp = addEnv(envp, "REDIRECT_STATUS", "200", &envp_length);
-
-    if(http_request->request_type == 1){
-        envp = addEnv(envp, "REQUEST_METHOD", "GET", &envp_length);
-    } else if(http_request->request_type == 2){
-       envp = addEnv(envp, "REQUEST_METHOD", "POST", &envp_length);
-        if(http_request->content_body != NULL)
-            envp = addEnv(envp, "BODY", http_request->content_body, &envp_length); 
-        //Render content Length       
-        char clength[4];
-        snprintf(clength, 4 ,"%d", http_request->content_length);
-        envp = addEnv(envp, "CONTENT_LENGTH", clength, &envp_length);
-    }
-    if(http_request->request_uri != NULL)
-        envp = addEnv(envp, "PATH_INFO", http_request->request_uri, &envp_length);
-    if(http_request->request_query != NULL)
-        envp = addEnv(envp, "QUERY_STRING", http_request->request_query, &envp_length);
-
-    envp = addEnv(envp, "REMOTE_ADDR", inet_ntoa(http_request->client->addr->sin_addr), &envp_length);    
-    envp = addEnv(envp, "SCRIPT_FILENAME", script, &envp_length);
-    envp = addEnv(envp, "HTTP_ACCEPT", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8\0", &envp_length);
-    envp = addEnv(envp, "CONTENT_TYPE", "application/x-www-form-urlencoded\0", &envp_length);
-    envp = addEnv(envp, "GATEWAY_INTERFACE","CGI/1.1\0", &envp_length);
-    envp = addEnv(envp, "SERVER_NAME", SERVER_NAME, &envp_length);
-    envp = addEnv(envp, "SERVER_PROTOCOL", "HTTP/1.1\0", &envp_length);
-    envp = addEnv(envp, "SERVER_PORT", SERVER_PORT_CGI, &envp_length);
-    envp = addEnv(envp, "SERVER_SOFTWARE", SERVER_SOFTWARE, &envp_length);
-
-    char *argv[] = { command , script , 0 }; /* Arg value array */
-    //Close environment list
-    envp = realloc(envp, (envp_length) * sizeof(envp[0]));
-    envp[envp_length] = 0;
-
-    pid_t pid;
-    int pipes[4];
-
-    if(pipe(&pipes[0]) < 0)/* Parent read/child write pipe */
-        return -1;
-    if(pipe(&pipes[2]) < 0) /* Child read/parent write pipe */
-        return -1;
-
-    if ((pid = fork()) > 0) {
-        /* Parent process */
-        //pipes[0]; /* Read end */
-        //pipes[3]; /* Write end*/
-
-        close(pipes[1]);
-        close(pipes[2]);
-
-        char buffer[1024];
-        int ret = 0;
-        //If request is post write the body 
-        if(http_request->request_type == 2){
-            int to_write = http_request->content_length;
-            int written = 0;
-            char * bptr; /* body pointer*/
-            bptr = http_request->content_body;
-            while(to_write > 0){
-                written = write(pipes[3], bptr, to_write);
-                to_write -= written;
-                bptr += written;
-            }
-        }
-        //Read the CGI output from the pipe and send it to the client
-        int received = 0;
-        while ((received = read(pipes[0], buffer, 1023))) {
-            buffer[received] = '\0';
-            if(sendString(sockfd, (char *)buffer) < 0){
-                ret = -1;
-                break;
-            }
-        }
-        close(pipes[0]);
-        close(pipes[3]);
-        
-        //Cleanup enviroment
-        while(envp_length--){
-            free(envp[envp_length]);
-        }
-                             
-        free(envp);
-
-        return ret;
-
-    } else {
-        close(pipes[0]);
-        close(pipes[3]);
-        //Duplicate our pipes against STDIN/STDOUT
-        dup2(pipes[1], fileno(stdout));
-        dup2(pipes[2], fileno(stdin));
-        //If enabled also pipe against STDERR
-        if(CGI_ERRORS)
-            dup2(pipes[1], fileno(stderr));
-
-        execve(command, &argv[0], envp);     
-        printf("Failed to launch CGI application\n");
-        exit(0);
-    }
-
-    return -1;
-
-}
-
 /**
  * @brief Receive a line untill EOL(end of line) character
  * @param sockfd remote socket to receive from
@@ -413,8 +309,53 @@ int sendCGI(int sockfd, http_request_t* http_request, char * command, char * scr
  * @param max_size max line size, do not exceed buffer size
  * @return line length or negative on failure
  */
-int recvLine(int sockfd, char *buffer, int max_size) 
+int getLine(int sockfd, char *buffer) 
 {
+    static char __thread line_buffer[MAX_HEADER_LENGTH] = {0};
+    static int __thread  buffered = 0;
+    static int __thread  line_pos = 0;
+    const int max = MAX_HEADER_LENGTH;
+
+    int buffer_pos = 0;
+    char * line_end;
+    line_end = memchr(&line_buffer[line_pos], '\n', max - line_pos);
+    if(line_end == NULL){
+        if(buffered > 0){   
+            strncpy(buffer + buffer_pos, &line_buffer[line_pos], buffered);
+            buffer_pos += buffered;
+            buffered = 0;        
+        }
+        buffered = recv(sockfd, line_buffer, max, 0);
+        if(buffered == 0){
+            return 0;
+        }
+        //error checking on recv
+        line_pos = 0;
+        line_end = memchr(&line_buffer[line_pos], '\n', max - line_pos);
+
+        if(line_end == NULL){
+            //Howdoe!
+            buffered = 0;
+            line_pos = 0;
+            strncpy(buffer + buffer_pos, &line_buffer[0], max - buffer_pos);
+            
+        }
+
+    } 
+
+    int line_length = line_end - &line_buffer[line_pos];
+    strncpy(&buffer[buffer_pos], &line_buffer[line_pos], line_length  );
+    buffered -= line_length;
+
+    line_pos += line_length + 1;
+    buffer[line_length] = '\0';
+
+    return strlen(buffer);
+
+}
+
+int oldRecv(int sockfd, char *buffer, int max_size) {
+    //Build a buffer system from wich the lines are extracted
     char *ptr = buffer;
     while(recv(sockfd, ptr, 1, 0) == 1 && (ptr - buffer) <= (max_size / 2) ){
         if(*ptr == '\n'){ 
@@ -424,7 +365,6 @@ int recvLine(int sockfd, char *buffer, int max_size)
     }
     *(ptr) = '\0';
     return strlen(buffer);
-
 }
 
 /**
@@ -482,41 +422,3 @@ int get_file_size(int fd) {
         return -1;
     return (int) stat_struct.st_size;
 }
-
-
-/* Some test functions for a custom protocol
-int sendInit(int sockfd, int type, char *value)
-{
-    char * init_string;
-    int preLength = strlen(initPre);
-    if((init_string = (char *)malloc(preLength + 2 + EOL_LENGTH + strlen(value))) == NULL)
-        return -1;
-    strcpy(init_string, initPre);
-    init_string[preLength + 0] = '0' + type;
-    init_string[preLength + 1] = ',';
-
-    strcpy(init_string + preLength +  2, value);
-    
-    strcpy(init_string + preLength + 2 + strlen(value), EOL);
-
-    int status = sendString(sockfd, init_string);
-    free(init_string);
-    return status;
-}
-
-int readInit(int sockfd)
-{
-    char *initString;
-
-    if(recvLine(sockfd, initString) == -1)
-        return -1;
-
-    if(strncmp(initString, initPre, strlen(initPre)) != 0)
-        return 0;
-
-    int type;
-    char ** endPtr;
-    type = strtol( (initString + strlen(initPre)), endPtr, 10);
-    printf("The type read is %d", type);
-    return 1;
-}*/

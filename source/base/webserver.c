@@ -1,10 +1,3 @@
-/** 
- *  @file   webserver.c
- *  @brief  HTTP webserver based on evilnetlib library
- *  @author Factionwars@evilzone.org
- *  @co-authors You and you
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,9 +13,16 @@
 
 //Net library
 #include "evilnetlib.h"
- //JSON parser library
-#include "jsmn/jsmn.h"
+#include "config.h"
 #include "webserver.h"
+
+/** 
+ *  @file   webserver.c
+ *  @brief  HTTP webserver based on evilnetlib library
+ *  @author Factionwars@evilzone.org
+ *  @co-authors You and you
+ */
+
 
 long long requests = 0;
 pthread_mutex_t count_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -39,6 +39,7 @@ int server()
         perror("Closing: error reading config files.");
         return EXIT_FAILURE;
     }
+    //printf("sex %s \n", config_modules[nmodules-1]->method);
     //return 0;
     int sock_server;
     //listen on the server port
@@ -70,101 +71,6 @@ int server()
     return 0;
 }
 
-int loadConfig(){
-
-    //Read config file
-    char * json; /* Contents of json file */
-    json = readFile(DIR_CONFIG"config.json");
-    if(json == NULL){
-        perror("Error reading config file");
-        return -1;
-    }
-
-    int r; /* Return value */
-    jsmn_parser parser; /* Parser */
-    jsmntok_t tokens[256]; /* Objects parsed from the json file */
-
-    //initialise the parser
-    jsmn_init(&parser);
-
-    //Parse the json string, returns jsmnerr_t
-    r = jsmn_parse(&parser, json, tokens, 256);
-    if(r != JSMN_SUCCESS){
-        printf("%s\n", json);
-        return -1;
-    }
-
-    int cparent = -1;   /* current parent node */
-    int nservers = 0;   /* number of server configs */
-    int i = 1;          /* array iterator */
-    jsmntok_t ctoken;   /* current token holder*/
-
-    //The first token MUST be a object
-    if(tokens[0].type != JSMN_OBJECT)
-        return -1;
-
-    //Servers config parser
-    while((ctoken = tokens[i]).end != 0){
-        if(ctoken.type == JSMN_OBJECT){
-            if(cparent == -1 || ctoken.start > tokens[cparent].end){
-                if(tokens[i - 1].type != JSMN_STRING){
-                    i++;
-                    continue;
-                }
-                cparent = i;
-
-                if(strncasecmp(&json[tokens[i - 1].start], "server", 6) == 0){
-                    //Handle the server array
-                    config_servers = realloc(config_servers,
-                     (nservers + 1 * sizeof(config_server_t *)));
-                    config_servers[nservers] = malloc(sizeof(config_server_t)); 
-                    config_servers[nservers]->port = 0;
-                    config_servers[nservers]->name = NULL;
-                    nservers++;
-                } else if(strncasecmp(&json[tokens[i - 1].start], "modules", 7) == 0){
-                    //Handle the modules array
-
-                } else {
-                    //No handler for this type of array
-                    cparent = -1;
-                    i++;
-                    continue;
-                }
-            }
-        } else if(cparent == -1){
-            i++;
-            continue;
-        }
-        
-        if(ctoken.type != JSMN_STRING && tokens[i+1].type != JSMN_STRING){
-            i++;
-            continue;
-        }
-        //Current server to be configured
-        config_server_t *cserver = config_servers[nservers - 1];
-
-        //Process key(ctoken):val(vtoken) pair
-        jsmntok_t vtoken = tokens[i+1];
-
-        unsigned int length = vtoken.end - vtoken.start;
-        char value[length + 10];
-        memcpy(value, &json[vtoken.start], length);
-        value[length] = '\0';
-
-        if(strncasecmp(&json[ctoken.start], "port", 4) == 0){       
-            if((cserver->port = atoi(value)) > 65535 || cserver->port < 0){
-                perror("Invalid port number");
-                return -1;
-            }
-        } else if(strncasecmp(&json[ctoken.start], "name", 4) == 0){
-            cserver->name = strdup(value);
-        }
-        i++;
-    }
-
-    return 0;
-}
-
 void logError(int level, http_client_t * client, http_request_t * http_request)
 {
     printf("Error level %d occured\n", level);
@@ -191,7 +97,7 @@ void *handleClient(void *client_void)
     http_request->request_type  = 0;
     http_request->client = client;
 
-#if DEBUG
+#ifdef DEBUG
     printf("Got a connection from %s on port %d\n", inet_ntoa(client->addr->sin_addr), ntohs(client->addr->sin_port));
 #endif
 
@@ -221,8 +127,8 @@ void *handleClient(void *client_void)
     
     int first = 0;
     http_request->content_length = 0;
-    char buffer[8192];
-    while(recvLine(client->sockfd, buffer, 8192))
+    char buffer[MAX_HEADER_LENGTH];
+    while(getLine(client->sockfd, buffer))
     {
         if(first == 0) {
             int uri_start = 0;
@@ -277,8 +183,8 @@ void *handleClient(void *client_void)
                     //Check for the content-length header
                     if(strcasecmp(theader->name, "Content-Length") == 0){
                         http_request->content_length = atoi(theader->value);
-                        if(http_request->content_length > 8192)
-                            http_request->content_length = 8192;
+                        if(http_request->content_length > MAX_HEADER_LENGTH)
+                            http_request->content_length = MAX_HEADER_LENGTH;
                         if(http_request->content_length < 0)
                             http_request->content_length = 0;
                     }
@@ -286,14 +192,15 @@ void *handleClient(void *client_void)
                 theader = theader->next;
             }
         }
+#ifdef DEBUG        
         printf("received: %s\n", buffer);
-
+#endif
         if(buffer[0] == '\xd')
             break;
     }
 
     if(http_request->request_type == 2){
-        if(http_request->content_length < 8192){
+        if(http_request->content_length < MAX_HEADER_LENGTH){
             int received = 0;            
             http_request->content_body = malloc(sizeof(char) * http_request->content_length);
             while(received < http_request->content_length){
@@ -333,7 +240,7 @@ void *handleClient(void *client_void)
             sendHeader(client->sockfd, "Server", SERVER_NAME);
             sendHeader(client->sockfd, "Date", buf);            
 
-            //sendFile(client->sockfd, "html/index.html");
+            //sendFile(client->sockfd, "scripts/index.html");
             sendPHP(client->sockfd, http_request);
             //sendPython(client->sockfd, http_request);
         } else {
@@ -348,15 +255,16 @@ void *handleClient(void *client_void)
         sendHeader(client->sockfd, "Server", SERVER_NAME);
         sendHeader(client->sockfd, "Date", buf);
     }
-
+#ifdef DEBUG
     printf("Closing connection to %s on port %d\n", inet_ntoa(client->addr->sin_addr), ntohs(client->addr->sin_port));
-
+#endif
     cleanUpClient(client, http_request);
 
-
+    /*
     pthread_mutex_lock(&count_mutex);
     requests++;
     pthread_mutex_unlock(&count_mutex);
+    */
     pthread_exit(0);
 }
 

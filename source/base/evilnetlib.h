@@ -3,7 +3,8 @@
 
 #define EOL "\n"
 #define EOL_LENGTH 1
-#define BACKLOG 100
+#define MAX_HEADER_LENGTH 8192
+#define BACKLOG 1023
 
 #define PHP_COMMAND "/usr/bin/php-cgi"
 #define PHP_FILE "scripts/test.php"
@@ -19,6 +20,8 @@
 #define SERVER_PORT 1337
 #define SERVER_PORT_CGI "1337"
 #define SERVER_SOFTWARE "EvilWebserver v0.2"
+
+#include <netinet/in.h>
 
 typedef struct { 
     int sockfd;
