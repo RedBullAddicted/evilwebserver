@@ -240,8 +240,10 @@ void *handleClient(void *client_void)
             sendHeader(client->sockfd, "Server", SERVER_NAME);
             sendHeader(client->sockfd, "Date", buf);            
 
+            sendAsset(http_request);
+            //sendAsset(client->sockfd, http_request)
             //sendFile(client->sockfd, "scripts/index.html");
-            sendPHP(client->sockfd, http_request);
+            //sendPHP(client->sockfd, http_request);
             //sendPython(client->sockfd, http_request);
         } else {
             sendString(client->sockfd, "HTTP/1.1 404\r\n");

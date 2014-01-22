@@ -7,6 +7,7 @@
 #include <arpa/inet.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <dirent.h>
 
 #include <netdb.h>
  
@@ -421,4 +422,71 @@ int get_file_size(int fd) {
     if(fstat(fd, &stat_struct) == -1)
         return -1;
     return (int) stat_struct.st_size;
+}
+
+/** TEST RBA - Cause he can not code in c, sorry :) **/
+
+/**
+ * @brief Serve files from Asset Directory
+ * @param directory to read (as string)
+ * @return list of files, -1 on error
+ */
+
+int NumberOfFiles(char *directory)
+{
+    DIR *dir;
+    struct dirent *ent;
+    int file_count = 0;
+    
+    if ((dir = opendir(directory)) != NULL) {
+        while ((ent = readdir(dir)) != NULL) {
+            if (ent->d_type == DT_REG) { 
+                file_count++;
+            }
+        }
+        return file_count;
+        closedir(dir);
+    } else {
+        return -1;
+    } 
+}
+
+char readDir(char *directory, int file_count, char *filelist)
+{
+    DIR *dir;
+    struct dirent *ent;
+    int i = 1;
+    
+    if ((dir = opendir(directory)) != NULL) {
+        while ((ent = readdir(dir)) != NULL) {
+            if (ent->d_type == DT_REG) { 
+                filelist[i] = ent->d_name;     
+                i++;
+            }
+        }
+
+        return 1;
+        closedir(dir);
+    } else {
+        return -1;
+    }
+}
+
+//int sendAsset(int sockfd, http_request_t* http_request)
+void sendAsset(http_request_t* http_request)
+{
+    char directory[] = "scripts/Assets";
+    int file_count;
+    int i;
+
+    printf("%s\n", http_request->request_uri);
+    
+    file_count = NumberOfFiles(directory);
+    char filelist[file_count];
+
+    readDir(directory, file_count, filelist);
+
+    for(i=1; i <= sizeof(filelist); i++){
+        printf("%s", filelist[i]);
+    }
 }
